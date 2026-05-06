@@ -2638,6 +2638,8 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
     piAuthProvider: hasUpdate('piAuthProvider') ? updates.piAuthProvider : existing.piAuthProvider,
     // Custom endpoint protocol (Anthropic/OpenAI compatible)
     customEndpoint: hasUpdate('customEndpoint') ? updates.customEndpoint : existing.customEndpoint,
+    // Mid-stream send behavior (steer vs queue) — read via resolveMidStreamBehavior()
+    midStreamBehavior: hasUpdate('midStreamBehavior') ? updates.midStreamBehavior : existing.midStreamBehavior,
     // Timestamps
     lastUsedAt: hasUpdate('lastUsedAt') ? updates.lastUsedAt : existing.lastUsedAt,
   };
