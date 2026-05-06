@@ -180,7 +180,23 @@ const METADATA_WRITE_GUARD_MS = 5000
  * used by the desktop flow at `plan-approval-message.ts`. Not localized —
  * the agent reads this, not the end user.
  */
+const AUTH_MAX_RETRIES = 10
+const AUTH_RETRY_BACKOFF_MS = [0, 2000, 2000, 4000, 4000, 4000, 8000, 8000, 8000, 16000]
 const PLAN_APPROVAL_MESSAGE = 'Plan approved, please execute.'
+
+function isAutoRetryableAuthCode(code?: string): boolean {
+  return code === 'invalid_api_key' || code === 'expired_oauth_token'
+}
+
+function isAutoRetryablePlainError(message: string): boolean {
+  const lowerErr = message.toLowerCase()
+  return (
+    lowerErr.includes('token is expired') ||
+    lowerErr.includes('authentication token is expired') ||
+    lowerErr.includes('please try signing in again') ||
+    (lowerErr.includes('401') && (lowerErr.includes('unauthorized') || lowerErr.includes('auth')))
+  )
+}
 
 // validateSpawnAttachmentPath removed — use shared validateFilePath from @craft-agent/server-core/handlers
 
@@ -822,9 +838,9 @@ interface ManagedSession {
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
   lastSentOptions?: SendMessageOptions
-  // Flag to prevent infinite retry loops (reset at start of each sendMessage)
-  authRetryAttempted?: boolean
-  // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
+  // Retry tracking (count-based, allows multiple retries with backoff)
+  authRetryCount?: number
+  // Flag indicating retry is in progress (to prevent complete handler from interfering)
   authRetryInProgress?: boolean
   // Whether this session is hidden from session list (e.g., mini edit sessions)
   hidden?: boolean
@@ -5339,12 +5355,11 @@ export class SessionManager implements ISessionManager {
     managed.processingGeneration++
     managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
 
-    // Reset auth retry flag for this new message (allows one retry per message)
-    // IMPORTANT: Skip reset if this is an auth retry call - the flag is already true
-    // and resetting it would allow infinite retry loops
+    // Reset retry count for new user messages.
+    // Skip reset for auth retry calls — the counter tracks retries within one attempt cycle.
     // Note: authRetryInProgress is NOT reset here - it's managed by the retry logic
     if (!_isAuthRetry) {
-      managed.authRetryAttempted = false
+      managed.authRetryCount = 0
     }
 
     // Store message/attachments for potential retry after auth refresh
@@ -5796,93 +5811,117 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Attempt auth retry: refresh token, destroy agent, resend last message.
-   * Shared by both typed_error and plain error auth-retry paths.
+   * Attempt request retry: reset auth/runtime state, destroy agent, resend last message.
+   * Shared by both typed_error and plain error retry paths.
+   * Supports up to AUTH_MAX_RETRIES with exponential backoff for flaky endpoints.
    * Returns true if retry was initiated, false if conditions not met.
    */
   private attemptAuthRetry(
     sessionId: string,
     managed: ManagedSession,
     workspaceId: string,
-    failureErrorCode?: string,
+    options?: {
+      failureErrorCode?: string
+      preferredDelayMs?: number
+      maxRetries?: number
+    },
   ): boolean {
-    if (managed.authRetryAttempted || !managed.lastSentMessage) return false
+    const failureErrorCode = options?.failureErrorCode
+    const maxRetries = options?.maxRetries ?? AUTH_MAX_RETRIES
+    const retryCount = managed.authRetryCount ?? 0
+    if (retryCount >= maxRetries || !managed.lastSentMessage) return false
 
-    sessionLog.info(`Auth error detected, attempting token refresh and retry for session ${sessionId}`)
-    managed.authRetryAttempted = true
+    sessionLog.info(`Retryable error detected, retrying session ${sessionId} (attempt ${retryCount + 1}/${maxRetries})`)
+    managed.authRetryCount = retryCount + 1
     managed.authRetryInProgress = true
 
+    const backoffMs = retryCount === 0
+      ? (options?.preferredDelayMs ?? AUTH_RETRY_BACKOFF_MS[retryCount] ?? 0)
+      : (AUTH_RETRY_BACKOFF_MS[retryCount] ?? 0)
+
     // Emit lightweight info so the user sees progress instead of a scary red error
+    const isAuth = isAutoRetryableAuthCode(failureErrorCode)
+    const retryLabel = retryCount === 0
+      ? (isAuth ? 'Authentication error, retrying…' : 'Request failed, retrying…')
+      : `Retrying… (${retryCount}/${maxRetries - 1})`
     this.sendEvent({
       type: 'info',
       sessionId,
-      message: 'Token expired, refreshing session…',
+      message: retryLabel,
       timestamp: this.monotonic(),
     }, workspaceId)
 
-    setImmediate(async () => {
-      try {
-        // 1. Reset summarization client so it picks up fresh credentials
-        sessionLog.info(`[auth-retry] Resetting summarization client for session ${sessionId}`)
-        resetSummarizationClient()
+    const scheduleRetry = () => {
+      setImmediate(async () => {
+        try {
+          // 1. Reset summarization client so it picks up fresh credentials
+          sessionLog.info(`[request-retry] Resetting summarization client for session ${sessionId}`)
+          resetSummarizationClient()
 
-        // 2. Destroy the agent — the new agent's postInit() will refresh auth
-        sessionLog.info(`[auth-retry] Destroying agent for session ${sessionId}`)
-        managed.agent = null
+          // 2. Destroy the agent — the new agent's postInit() will refresh runtime/auth state
+          sessionLog.info(`[request-retry] Destroying agent for session ${sessionId}`)
+          managed.agent = null
 
-        // 3. Retry the message
-        const retryMessage = managed.lastSentMessage
-        const retryAttachments = managed.lastSentAttachments
-        const retryStoredAttachments = managed.lastSentStoredAttachments
-        const retryOptions = managed.lastSentOptions
+          // 3. Retry the message
+          const retryMessage = managed.lastSentMessage
+          const retryAttachments = managed.lastSentAttachments
+          const retryStoredAttachments = managed.lastSentStoredAttachments
+          const retryOptions = managed.lastSentOptions
 
-        if (retryMessage) {
-          sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
-          this.setProcessing(managed, false)
+          if (retryMessage) {
+            sessionLog.info(`[request-retry] Retrying message for session ${sessionId}`)
+            this.setProcessing(managed, false)
 
-          // Remove the user message that was added for this failed attempt
-          // so we don't get duplicate messages when retrying
-          const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
-          if (lastUserMsgIndex !== -1) {
-            managed.messages.splice(lastUserMsgIndex, 1)
+            // Remove the user message that was added for this failed attempt
+            // so we don't get duplicate messages when retrying
+            const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
+            if (lastUserMsgIndex !== -1) {
+              managed.messages.splice(lastUserMsgIndex, 1)
+            }
+
+            managed.authRetryInProgress = false
+
+            await this.sendMessage(
+              sessionId,
+              retryMessage,
+              retryAttachments,
+              retryStoredAttachments,
+              retryOptions,
+              undefined,  // existingMessageId
+              true        // _isAuthRetry - prevents counter reset
+            )
+            sessionLog.info(`[request-retry] Retry completed for session ${sessionId}`)
+          } else {
+            managed.authRetryInProgress = false
           }
-
+        } catch (retryError) {
           managed.authRetryInProgress = false
-
-          await this.sendMessage(
+          sessionLog.error(`[request-retry] Failed to retry message for session ${sessionId}:`, retryError)
+          sessionRuntimeHooks.captureException(retryError, { errorSource: 'request-retry', sessionId })
+          const failedMessage: Message = {
+            id: generateMessageId(),
+            role: 'error',
+            content: 'Request failed after retry. Please try again or check your credentials.',
+            timestamp: this.monotonic(),
+            errorCode: failureErrorCode,
+          }
+          managed.messages.push(failedMessage)
+          this.sendEvent({
+            type: 'error',
             sessionId,
-            retryMessage,
-            retryAttachments,
-            retryStoredAttachments,
-            retryOptions,
-            undefined,  // existingMessageId
-            true        // _isAuthRetry - prevents infinite retry loop
-          )
-          sessionLog.info(`[auth-retry] Retry completed for session ${sessionId}`)
-        } else {
-          managed.authRetryInProgress = false
+            error: 'Request failed after retry. Please try again or check your credentials.',
+            timestamp: failedMessage.timestamp,
+          }, workspaceId)
+          this.onProcessingStopped(sessionId, 'error')
         }
-      } catch (retryError) {
-        managed.authRetryInProgress = false
-        sessionLog.error(`[auth-retry] Failed to retry after auth refresh for session ${sessionId}:`, retryError)
-        sessionRuntimeHooks.captureException(retryError, { errorSource: 'auth-retry', sessionId })
-        const failedMessage: Message = {
-          id: generateMessageId(),
-          role: 'error',
-          content: 'Authentication failed. Please check your credentials.',
-          timestamp: this.monotonic(),
-          errorCode: failureErrorCode,
-        }
-        managed.messages.push(failedMessage)
-        this.sendEvent({
-          type: 'error',
-          sessionId,
-          error: 'Authentication failed. Please check your credentials.',
-          timestamp: failedMessage.timestamp,
-        }, workspaceId)
-        this.onProcessingStopped(sessionId, 'error')
-      }
-    })
+      })
+    }
+
+    if (backoffMs > 0) {
+      setTimeout(scheduleRetry, backoffMs)
+    } else {
+      scheduleRetry()
+    }
 
     return true
   }
@@ -6864,16 +6903,12 @@ export class SessionManager implements ISessionManager {
           break
         }
 
-        // Defensive: detect auth-expiry text in plain errors that weren't classified
-        // as typed_error (e.g. Pi SDK error path or future provider changes).
-        const lowerErr = event.message.toLowerCase()
-        const isPlainAuthError =
-          lowerErr.includes('token is expired') ||
-          lowerErr.includes('authentication token is expired') ||
-          lowerErr.includes('please try signing in again') ||
-          (lowerErr.includes('401') && (lowerErr.includes('unauthorized') || lowerErr.includes('auth')))
-
-        if (isPlainAuthError && this.attemptAuthRetry(sessionId, managed, workspaceId)) {
+        if (
+          isAutoRetryablePlainError(event.message) &&
+          this.attemptAuthRetry(sessionId, managed, workspaceId, {
+            maxRetries: 1,
+          })
+        ) {
           break
         }
 
@@ -6905,16 +6940,16 @@ export class SessionManager implements ISessionManager {
         // Typed errors have structured information - send both formats for compatibility
         sessionLog.info('typed_error:', JSON.stringify(event.error, null, 2))
 
-        // Check for auth errors that can be retried by refreshing the token
-        // The SDK subprocess caches the token at startup, so if it expires mid-session,
-        // we get invalid_api_key errors. We can fix this by:
-        // 1. Resetting the summarization client cache
-        // 2. Destroying the agent (new agent's postInit() refreshes the token)
-        // 3. Retrying the message
-        const isAuthError = event.error.code === 'invalid_api_key' ||
-          event.error.code === 'expired_oauth_token'
-
-        if (isAuthError && this.attemptAuthRetry(sessionId, managed, workspaceId, event.error.code)) {
+        const shouldAutoRetryAuth = isAutoRetryableAuthCode(event.error.code)
+        const shouldAutoRetryTypedError = shouldAutoRetryAuth || event.error.canRetry
+        if (
+          shouldAutoRetryTypedError &&
+          this.attemptAuthRetry(sessionId, managed, workspaceId, {
+            failureErrorCode: event.error.code,
+            preferredDelayMs: event.error.retryDelayMs,
+            maxRetries: shouldAutoRetryAuth ? 1 : AUTH_MAX_RETRIES,
+          })
+        ) {
           // Don't add error message or send to renderer - we're handling it via retry
           break
         }

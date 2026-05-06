@@ -139,9 +139,10 @@ describe('createBuiltInConnection seeds midStreamBehavior', () => {
     expect(conn.midStreamBehavior).toBe('steer')
   })
 
-  it("anthropic-api with custom endpoint becomes pi_compat → 'steer'", () => {
+  it("Anthropic API key with custom endpoint stays native Anthropic → 'queue'", () => {
     const conn = createBuiltInConnection('anthropic-api', 'http://localhost:11434/v1')
-    expect(conn.providerType).toBe('pi_compat')
-    expect(conn.midStreamBehavior).toBe('steer')
+    expect(conn.providerType).toBe('anthropic')
+    expect(conn.authType).toBe('api_key_with_endpoint')
+    expect(conn.midStreamBehavior).toBe('queue')
   })
 })

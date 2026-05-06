@@ -12,7 +12,7 @@ import copilotIcon from "@/assets/provider-icons/copilot.svg"
  * The high-level provider choice the user makes on first launch.
  * This maps to one or more ApiSetupMethods downstream.
  */
-export type ProviderChoice = 'claude' | 'chatgpt' | 'copilot' | 'api_key' | 'local'
+export type ProviderChoice = 'claude' | 'anthropic_api_key' | 'chatgpt' | 'copilot' | 'api_key' | 'local'
 
 interface ProviderOption {
   id: ProviderChoice
@@ -23,6 +23,7 @@ interface ProviderOption {
 
 const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
   claude: <img src={claudeIcon} alt="" className="size-5 rounded-[3px]" />,
+  anthropic_api_key: <Key className="size-5" />,
   chatgpt: <img src={openaiIcon} alt="" className="size-5 rounded-[3px]" />,
   copilot: <img src={copilotIcon} alt="" className="size-5 rounded-[3px]" />,
   api_key: <Key className="size-5" />,
@@ -65,9 +66,15 @@ export function ProviderSelectStep({ onSelect, onSkip }: ProviderSelectStepProps
       icon: PROVIDER_ICONS.copilot,
     },
     {
+      id: 'anthropic_api_key',
+      name: t("onboarding.apiSetup.anthropicApiKey"),
+      description: t("onboarding.apiSetup.anthropicApiKeyDesc"),
+      icon: PROVIDER_ICONS.anthropic_api_key,
+    },
+    {
       id: 'api_key',
       name: t("onboarding.providerSelect.otherProvider"),
-      description: 'Anthropic, AWS Bedrock, OpenRouter, Google or any compatible provider.',
+      description: 'AWS Bedrock, OpenRouter, Google, OpenAI, or any OpenAI-compatible provider.',
       icon: PROVIDER_ICONS.api_key,
     },
     {

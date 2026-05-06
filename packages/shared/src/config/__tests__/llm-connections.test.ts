@@ -28,6 +28,12 @@ describe('getDefaultModelsForConnection', () => {
     expect(typeof (first as any).id).toBe('string')
   })
 
+  it('anthropic with custom endpoint still defaults to official models', () => {
+    const models = getDefaultModelsForConnection('anthropic', undefined, true)
+    expect(models).toEqual(ANTHROPIC_MODELS)
+    expect(getDefaultModelForConnection('anthropic', undefined, true)).toBe(ANTHROPIC_MODELS[0]!.id)
+  })
+
   it('pi with piAuthProvider returns filtered models', () => {
     const models = getDefaultModelsForConnection('pi', 'anthropic')
     expect(models.length).toBeGreaterThan(0)

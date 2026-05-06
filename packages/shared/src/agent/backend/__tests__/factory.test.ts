@@ -205,8 +205,8 @@ describe('isValidProviderAuthCombination', () => {
       expect(isValidProviderAuthCombination('anthropic', 'oauth')).toBe(true);
     });
 
-    it('should reject api_key_with_endpoint auth', () => {
-      expect(isValidProviderAuthCombination('anthropic', 'api_key_with_endpoint')).toBe(false);
+    it('should accept api_key_with_endpoint auth (custom Anthropic endpoint)', () => {
+      expect(isValidProviderAuthCombination('anthropic', 'api_key_with_endpoint')).toBe(true);
     });
 
     it('should reject none auth', () => {
@@ -265,7 +265,7 @@ describe('phase4 backend abstraction APIs', () => {
     expect(resolveSetupTestConnectionHint({
       provider: 'anthropic',
       baseUrl: 'https://api.example.com',
-    })).toEqual({ providerType: 'pi_compat' });
+    })).toEqual({ providerType: 'anthropic', authType: 'api_key_with_endpoint' });
 
     expect(resolveSetupTestConnectionHint({
       provider: 'anthropic',
@@ -281,13 +281,13 @@ describe('phase4 backend abstraction APIs', () => {
       provider: 'pi',
       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       customEndpoint: { api: 'openai-completions' },
-    })).toEqual({ providerType: 'pi_compat', piAuthProvider: 'openai', customEndpoint: { api: 'openai-completions' } });
+    })).toEqual({ providerType: 'pi_compat', authType: 'api_key_with_endpoint', piAuthProvider: 'openai', customEndpoint: { api: 'openai-completions' } });
 
     expect(resolveSetupTestConnectionHint({
       provider: 'pi',
       baseUrl: 'https://my-anthropic-proxy.internal/v1',
       customEndpoint: { api: 'anthropic-messages' },
-    })).toEqual({ providerType: 'pi_compat', piAuthProvider: 'anthropic', customEndpoint: { api: 'anthropic-messages' } });
+    })).toEqual({ providerType: 'pi_compat', authType: 'api_key_with_endpoint', piAuthProvider: 'anthropic', customEndpoint: { api: 'anthropic-messages' } });
   });
 
   it('fetchBackendModels dispatches for pi provider', async () => {

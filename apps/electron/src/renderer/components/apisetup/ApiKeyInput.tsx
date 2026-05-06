@@ -151,6 +151,7 @@ function getPresetsForProvider(providerType: 'anthropic' | 'openai' | 'pi' | 'go
 }
 
 function getPresetForUrl(url: string, presets: Preset[]): PresetKey {
+  if (!url.trim()) return 'custom'
   const match = presets.find(p => p.key !== 'custom' && p.url === url)
   return match?.key ?? 'custom'
 }
@@ -179,9 +180,11 @@ export function ApiKeyInput({
   const presets = getPresetsForProvider(providerType)
   const defaultPreset = presets[0]
 
-  // Compute initial preset: explicit (Pi piAuthProvider), derived from URL, or default
+  // Compute initial preset: explicit (Pi piAuthProvider), derived from URL, or default.
+  // Direct Anthropic API key connections can use a custom base URL natively, so
+  // reopening/editing that connection should still show Anthropic rather than Custom.
   const initialPreset = initialValues?.activePreset
-    ?? (initialValues?.baseUrl ? getPresetForUrl(initialValues.baseUrl, presets) : defaultPreset.key)
+    ?? (initialValues?.baseUrl && providerType !== 'anthropic' ? getPresetForUrl(initialValues.baseUrl, presets) : defaultPreset.key)
 
   const { t } = useTranslation()
   const [apiKey, setApiKey] = useState(initialValues?.apiKey ?? '')
@@ -192,7 +195,9 @@ export function ApiKeyInput({
     initialPreset !== 'custom' ? initialPreset : defaultPreset.key
   )
   const [connectionDefaultModel, setConnectionDefaultModel] = useState(initialValues?.connectionDefaultModel ?? '')
-  const [customApi, setCustomApi] = useState<CustomEndpointApi>(initialValues?.customApi ?? 'openai-completions')
+  const [customApi, setCustomApi] = useState<CustomEndpointApi>(
+    initialValues?.customApi ?? (providerType === 'anthropic' ? 'anthropic-messages' : 'openai-completions')
+  )
   const [modelError, setModelError] = useState<string | null>(null)
 
   // Bedrock auth state
@@ -218,9 +223,18 @@ export function ApiKeyInput({
 
   const isPiApiKeyFlow = providerType === 'pi_api_key'
   const isBedrock = activePreset === 'amazon-bedrock'
+  const isAnthropicApiKeyFlow = providerType === 'anthropic'
   // Hide endpoint/model fields for providers with well-known endpoints handled by the SDK
   const DEFAULT_ENDPOINT_PROVIDERS = new Set(['anthropic', 'openai', 'pi', 'google'])
   const isDefaultProviderPreset = DEFAULT_ENDPOINT_PROVIDERS.has(activePreset)
+  const hasBaseUrl = !!baseUrl.trim()
+  const isDirectAnthropicEndpoint =
+    isAnthropicApiKeyFlow &&
+    hasBaseUrl &&
+    (activePreset !== 'custom' || customApi === 'anthropic-messages')
+  const showEndpointInput = !isBedrock && (!isDefaultProviderPreset || isAnthropicApiKeyFlow)
+  const showModelInput = !isDefaultProviderPreset || isAnthropicApiKeyFlow
+  const modelIsRequired = !isDefaultProviderPreset && hasBaseUrl && !isDirectAnthropicEndpoint
 
   // Provider-specific placeholders from the active preset
   const activePresetObj = presets.find(p => p.key === activePreset)
@@ -286,7 +300,7 @@ export function ApiKeyInput({
     } else if (preset.key === 'kimi-coding') {
       setConnectionDefaultModel(COMPAT_KIMI_DEFAULTS)
     } else if (preset.key === 'custom') {
-      setConnectionDefaultModel(providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS)
+      setConnectionDefaultModel(providerType === 'anthropic' ? '' : (providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS))
     } else {
       setConnectionDefaultModel('')
     }
@@ -301,6 +315,7 @@ export function ApiKeyInput({
       activePreset,
       activePresetHasEmptyUrl: currentPresetObj?.url === '',
       lastNonCustomPreset,
+      preserveCustomAsActivePreset: providerType === 'anthropic' && activePreset === 'anthropic',
     })
     setActivePreset(nextPresetState.activePreset)
     setLastNonCustomPreset(nextPresetState.lastNonCustomPreset)
@@ -312,7 +327,7 @@ export function ApiKeyInput({
         setConnectionDefaultModel(COMPAT_MINIMAX_DEFAULTS)
       } else if (presetKey === 'kimi-coding') {
         setConnectionDefaultModel(COMPAT_KIMI_DEFAULTS)
-      } else if (presetKey === 'openrouter' || presetKey === 'vercel-ai-gateway' || presetKey === 'custom') {
+      } else if (presetKey === 'openrouter' || presetKey === 'vercel-ai-gateway' || (presetKey === 'custom' && providerType !== 'anthropic')) {
         setConnectionDefaultModel(providerType === 'openai' ? COMPAT_OPENAI_DEFAULTS : COMPAT_ANTHROPIC_DEFAULTS)
       }
     }
@@ -377,16 +392,20 @@ export function ApiKeyInput({
 
     const parsedModels = parseModelList(connectionDefaultModel)
 
-    const isUsingDefaultEndpoint = isDefaultProviderPreset || !effectiveBaseUrl
-    const requiresModel = !isDefaultProviderPreset && !!effectiveBaseUrl
+    const isCustomEndpoint = activePreset === 'custom' && !!effectiveBaseUrl
+    const isDirectAnthropicCustomEndpoint =
+      providerType === 'anthropic' &&
+      !!effectiveBaseUrl &&
+      (!isCustomEndpoint || customApi === 'anthropic-messages')
+    const isUsingDefaultEndpoint = !effectiveBaseUrl || (isDefaultProviderPreset && effectiveBaseUrl === activePresetObj?.url)
+    const requiresModel = !isDefaultProviderPreset && !!effectiveBaseUrl && !isDirectAnthropicCustomEndpoint
     if (requiresModel && parsedModels.length === 0) {
       setModelError('Default model is required for custom endpoints.')
       return
     }
 
     // Include custom endpoint protocol when user configured a custom base URL
-    const isCustomEndpoint = activePreset === 'custom' && !!effectiveBaseUrl
-    const customEndpoint = isCustomEndpoint ? { api: customApi } : undefined
+    const customEndpoint = isCustomEndpoint && !isDirectAnthropicCustomEndpoint ? { api: customApi } : undefined
     const resolvedPiAuthProvider = isCustomEndpoint
       ? (customApi === 'anthropic-messages' ? 'anthropic' : 'openai')
       : effectivePiAuthProvider
@@ -475,8 +494,8 @@ export function ApiKeyInput({
             </StyledDropdownMenuContent>
           </DropdownMenu>
         </div>
-        {/* Base URL input - hidden for default provider presets (Anthropic/OpenAI) and Bedrock */}
-        {!isDefaultProviderPreset && !isBedrock && (
+        {/* Base URL input - hidden for default provider presets except Anthropic API Key mode */}
+        {showEndpointInput && (
           <div className={cn(
             "rounded-md shadow-minimal transition-colors",
             "bg-foreground-2 focus-within:bg-background"
@@ -765,12 +784,12 @@ export function ApiKeyInput({
             </>
           )}
         </div>
-      ) : !isDefaultProviderPreset && (
+      ) : showModelInput && (
         <div className="space-y-2">
           <Label htmlFor="connection-default-model" className="text-muted-foreground font-normal">
             Default Model{' '}
             <span className="text-foreground/30">
-              · {!isBedrock && baseUrl.trim() ? 'required' : 'optional'}
+              · {modelIsRequired ? 'required' : 'optional'}
             </span>
           </Label>
           <div className={cn(
@@ -797,9 +816,11 @@ export function ApiKeyInput({
           <p className="text-xs text-foreground/30">
             Comma-separated list. The first model is the default. The last is used for summarization.
           </p>
-          {(activePreset === 'custom' || !activePreset) && (
+          {(activePreset === 'custom' || isAnthropicApiKeyFlow || !activePreset) && (
             <p className="text-xs text-foreground/30">
-              Required for custom endpoints. Use the provider-specific model ID.
+              {modelIsRequired
+                ? 'Required for custom endpoints. Use the provider-specific model ID.'
+                : 'Leave empty to use the default Claude model list, or enter comma-separated model IDs.'}
             </p>
           )}
         </div>

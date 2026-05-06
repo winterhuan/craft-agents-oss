@@ -109,7 +109,7 @@ class ModelRefreshService {
 
     // Layer 3: MODEL_REGISTRY hardcoded fallback
     if (!newModels) {
-      const registryModels = getModelsForProviderType(providerType, connection.piAuthProvider)
+      const registryModels = getModelsForProviderType(providerType, connection.piAuthProvider, !!connection.baseUrl)
       if (registryModels.length > 0) {
         newModels = registryModels
         handlerLog.info(`Model refresh [${slug}]: using ${newModels.length} models from MODEL_REGISTRY`)

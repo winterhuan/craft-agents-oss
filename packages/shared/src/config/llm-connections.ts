@@ -558,8 +558,10 @@ export function modelSupportsImages(
  * @param piAuthProvider - Optional Pi auth provider for filtering Pi models
  * @returns Model list from registry, or empty array for compat providers
  */
-export function getModelsForProviderType(providerType: LlmProviderType, piAuthProvider?: string): ModelDefinition[] {
-  // Compat providers require explicit model lists from the connection
+export function getModelsForProviderType(providerType: LlmProviderType, piAuthProvider?: string, _hasCustomEndpoint?: boolean): ModelDefinition[] {
+  // Compat providers require explicit model lists from the connection.
+  // Anthropic custom base URLs can still use official Claude model IDs when
+  // the user has not supplied a custom model list.
   if (isCompatProvider(providerType)) {
     return [];
   }
@@ -609,7 +611,7 @@ export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   'amazon-bedrock': ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
 };
 
-export function getDefaultModelsForConnection(providerType: LlmProviderType, piAuthProvider?: string): Array<ModelDefinition | string> {
+export function getDefaultModelsForConnection(providerType: LlmProviderType, piAuthProvider?: string, _hasCustomEndpoint?: boolean): Array<ModelDefinition | string> {
   if (providerType === 'pi') {
     const models = _piModelResolver(piAuthProvider);
     // Sort preferred defaults first so getDefaultModelForConnection picks a modern model.
@@ -639,7 +641,8 @@ export function getDefaultModelsForConnection(providerType: LlmProviderType, piA
     return models;
   }
   if (providerType === 'pi_compat') return [];  // Dynamic — user specifies
-  // anthropic
+  // Anthropic direct API and Anthropic custom base URLs default to official
+  // Claude model IDs unless the connection supplies its own model list.
   return ANTHROPIC_MODELS;
 }
 
@@ -651,8 +654,8 @@ export function getDefaultModelsForConnection(providerType: LlmProviderType, piA
  * @param piAuthProvider - Optional Pi auth provider for filtering Pi models
  * @returns Default model ID string
  */
-export function getDefaultModelForConnection(providerType: LlmProviderType, piAuthProvider?: string): string {
-  const models = getDefaultModelsForConnection(providerType, piAuthProvider);
+export function getDefaultModelForConnection(providerType: LlmProviderType, piAuthProvider?: string, hasCustomEndpoint?: boolean): string {
+  const models = getDefaultModelsForConnection(providerType, piAuthProvider, hasCustomEndpoint);
   const first = models[0];
   if (!first) return '';  // Dynamic provider — no default
   return typeof first === 'string' ? first : first.id;
@@ -723,7 +726,7 @@ export function isValidProviderAuthCombination(
   authType: LlmAuthType
 ): boolean {
   const validCombinations: Record<LlmProviderType, LlmAuthType[]> = {
-    anthropic: ['api_key', 'oauth'],
+    anthropic: ['api_key', 'api_key_with_endpoint', 'oauth'],
     pi: ['api_key', 'oauth', 'iam_credentials', 'environment', 'none'],
     pi_compat: ['api_key_with_endpoint', 'none'],
   };
