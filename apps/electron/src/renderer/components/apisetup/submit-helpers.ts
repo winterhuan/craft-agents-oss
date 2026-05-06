@@ -31,13 +31,21 @@ export function resolvePresetStateForBaseUrlChange(params: {
   activePreset: PresetKey
   activePresetHasEmptyUrl: boolean
   lastNonCustomPreset: PresetKey | null
+  preserveCustomAsActivePreset?: boolean
 }): { activePreset: PresetKey; lastNonCustomPreset: PresetKey | null } {
-  const { matchedPreset, activePreset, activePresetHasEmptyUrl, lastNonCustomPreset } = params
+  const { matchedPreset, activePreset, activePresetHasEmptyUrl, lastNonCustomPreset, preserveCustomAsActivePreset } = params
 
   if (matchedPreset !== 'custom') {
     return {
       activePreset: matchedPreset,
       lastNonCustomPreset: matchedPreset,
+    }
+  }
+
+  if (preserveCustomAsActivePreset) {
+    return {
+      activePreset,
+      lastNonCustomPreset,
     }
   }
 

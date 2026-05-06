@@ -137,8 +137,10 @@ export const BUILT_IN_CONNECTION_TEMPLATES: Record<string, {
   piAuthProvider?: string
 }> = {
   'anthropic-api': {
-    name: (h) => h ? 'Custom Anthropic-Compatible' : 'Anthropic (API Key)',
-    providerType: (h) => h ? 'pi_compat' : 'anthropic',
+    // Keep providerType as 'anthropic' even with a custom baseUrl — the Anthropic SDK
+    // supports custom endpoints natively via baseURL. Only the authType changes.
+    name: (h) => h ? 'Anthropic (Custom Endpoint)' : 'Anthropic (API Key)',
+    providerType: 'anthropic',
     authType: (h) => h ? 'api_key_with_endpoint' : 'api_key',
   },
   'claude-max': {
@@ -234,8 +236,8 @@ export function createBuiltInConnection(slug: string, baseUrl?: string | null): 
     name,
     providerType,
     authType,
-    models: getDefaultModelsForConnection(providerType, template.piAuthProvider),
-    defaultModel: getDefaultModelForConnection(providerType, template.piAuthProvider),
+    models: getDefaultModelsForConnection(providerType, template.piAuthProvider, hasCustomEndpoint),
+    defaultModel: getDefaultModelForConnection(providerType, template.piAuthProvider, hasCustomEndpoint),
     modelSelectionMode: providerType === 'pi' ? 'automaticallySyncedFromProvider' : undefined,
     piAuthProvider: template.piAuthProvider,
     createdAt: Date.now(),

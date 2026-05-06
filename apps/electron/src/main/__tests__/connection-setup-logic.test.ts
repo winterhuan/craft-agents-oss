@@ -80,11 +80,14 @@ describe('createBuiltInConnection', () => {
     expect(conn.name).toBe('Anthropic (API Key)')
   })
 
-  it('creates anthropic-api with baseUrl as compat provider', () => {
+  it('creates anthropic-api with baseUrl as anthropic provider with custom endpoint auth', () => {
     const conn = createBuiltInConnection('anthropic-api', 'https://custom.endpoint.com')
-    expect(conn.providerType).toBe('pi_compat')
+    expect(conn.providerType).toBe('anthropic')
     expect(conn.authType).toBe('api_key_with_endpoint')
-    expect(conn.name).toBe('Custom Anthropic-Compatible')
+    expect(conn.name).toBe('Anthropic (Custom Endpoint)')
+    const modelIds = conn.models?.map((m) => typeof m === 'string' ? m : m.id) ?? []
+    expect(modelIds.length).toBeGreaterThan(0)
+    expect(conn.defaultModel).toBe(modelIds[0])
   })
 
   it('creates claude-max with oauth', () => {

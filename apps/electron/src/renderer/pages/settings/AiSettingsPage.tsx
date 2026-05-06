@@ -75,7 +75,7 @@ function getModelOptionsForConnection(
   }
 
   // Fall back to registry models for this provider type
-  const registryModels = getModelsForProviderType(connection.providerType, connection.piAuthProvider)
+  const registryModels = getModelsForProviderType(connection.providerType, connection.piAuthProvider, !!connection.baseUrl)
   return registryModels.map((m) => ({
     value: m.id,
     label: m.name,
@@ -549,6 +549,8 @@ function WorkspaceOverrideCard({ workspace, llmConnections, onSettingsChange }: 
 /** Map a connection's provider type to the corresponding API key setup method. */
 function getApiKeyMethodForConnection(conn: LlmConnectionWithStatus): ApiSetupMethod {
   const provider = conn.providerType || conn.type
+  // pi_compat connections created from an anthropic-api slug should edit via anthropic_api_key flow
+  if (provider === 'pi_compat' && conn.slug.startsWith('anthropic-api')) return 'anthropic_api_key'
   if (provider === 'pi' || provider === 'pi_compat') return 'pi_api_key'
   return 'anthropic_api_key'
 }
@@ -758,13 +760,15 @@ export default function AiSettingsPage() {
       ?.map((m: string | ModelDefinition) => typeof m === 'string' ? m : m.id)
       .filter(Boolean)
 
+    const method = getApiKeyMethodForConnection(connection)
+    const isDirectAnthropicApiKeyConnection = method === 'anthropic_api_key' && connection.providerType === 'anthropic'
     const isCustomEndpointConnection = !!connection.customEndpoint && !!connection.baseUrl?.trim()
 
     setEditInitialValues({
       apiKey,
       baseUrl: connection.baseUrl,
       connectionDefaultModel: modelStr,
-      activePreset: isCustomEndpointConnection ? 'custom' : (connection.piAuthProvider || undefined),
+      activePreset: isDirectAnthropicApiKeyConnection ? 'anthropic' : (isCustomEndpointConnection ? 'custom' : (connection.piAuthProvider || undefined)),
       models: modelIds,
       customApi: connection.customEndpoint?.api,
     })
@@ -772,7 +776,6 @@ export default function AiSettingsPage() {
     // Open overlay and jump directly to credentials step (no reset — jumpToCredentials sets state)
     openApiSetup(connection.slug)
     setIsDirectEdit(true)
-    const method = getApiKeyMethodForConnection(connection)
     apiSetupOnboarding.jumpToCredentials(method)
   }, [apiSetupOnboarding, openApiSetup])
 

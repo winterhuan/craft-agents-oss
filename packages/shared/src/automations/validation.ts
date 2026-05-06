@@ -371,7 +371,7 @@ export function validateAutomations(workspaceRoot: string): ValidationResult {
                   });
                 } else if (action.model) {
                   // Validate model is available for this connection
-                  const availableModels = connection.models ?? getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider);
+                  const availableModels = connection.models ?? getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider, !!connection.baseUrl);
                   const modelIds = availableModels.map(m => typeof m === 'string' ? m : (m as ModelDefinition).id);
                   // Check exact match or suffix match (e.g. "haiku" matches "claude-haiku-4-5-20251001")
                   const modelValue = action.model;

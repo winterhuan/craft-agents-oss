@@ -665,6 +665,7 @@ export class ClaudeAgent extends BaseAgent {
     // Apply env vars to process.env (for SDK subprocess) and envOverrides (per-session isolation)
     for (const [key, value] of Object.entries(result.envVars)) {
       process.env[key] = value;
+      this.config.envOverrides = { ...this.config.envOverrides, [key]: value };
     }
 
     // Pass mini model to SDK subprocess so built-in tools like WebFetch

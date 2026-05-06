@@ -1607,6 +1607,55 @@ function modelSetEquals(a: string[], b: string[]): boolean {
   return true;
 }
 
+function hasCustomAnthropicModelList(connection: Pick<LlmConnection, 'models'>): boolean {
+  const modelIds = normalizeModelIds(connection.models);
+  if (modelIds.length === 0) return false;
+  return modelIds.some(id => !id.startsWith('claude-'));
+}
+
+function shouldUseOfficialAnthropicModels(connection: Pick<LlmConnection, 'providerType' | 'baseUrl' | 'models'>): boolean {
+  if (connection.providerType !== 'anthropic') return false;
+  if (!connection.baseUrl?.trim()) return true;
+  return !hasCustomAnthropicModelList(connection);
+}
+
+function migrateAnthropicApiCompatConnections(config: StoredConfig): boolean {
+  if (!config.llmConnections) return false;
+  let changed = false;
+
+  for (const connection of config.llmConnections) {
+    const providerStr = connection.providerType as string;
+    if (providerStr !== 'pi_compat' || !connection.slug.startsWith('anthropic-api')) continue;
+
+    const isAnthropicCompat =
+      connection.customEndpoint?.api === 'anthropic-messages' ||
+      connection.piAuthProvider === 'anthropic';
+    if (!isAnthropicCompat) continue;
+
+    const hasBaseUrl = !!connection.baseUrl?.trim();
+    const hasCustomModels = hasCustomAnthropicModelList(connection);
+
+    connection.providerType = 'anthropic';
+    connection.authType = hasBaseUrl ? 'api_key_with_endpoint' : 'api_key';
+    if (connection.name === 'Custom Anthropic-Compatible') {
+      connection.name = hasBaseUrl ? 'Anthropic (Custom Endpoint)' : 'Anthropic (API Key)';
+    }
+    delete connection.piAuthProvider;
+    delete connection.customEndpoint;
+
+    if (!hasCustomModels) {
+      connection.models = getDefaultModelsForConnection('anthropic', undefined, hasBaseUrl);
+      connection.defaultModel = getDefaultModelForConnection('anthropic', undefined, hasBaseUrl);
+    } else if (!connection.defaultModel) {
+      connection.defaultModel = normalizeModelIds(connection.models)[0];
+    }
+
+    changed = true;
+  }
+
+  return changed;
+}
+
 export function inferModelSelectionMode(
   connection: Pick<LlmConnection, 'models'>,
   providerDefaultModelIds: string[],
@@ -1634,8 +1683,8 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
       changed = true;
     }
 
-    const defaultModels = getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider);
-    const defaultModel = getDefaultModelForConnection(connection.providerType, connection.piAuthProvider);
+    const defaultModels = getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider, !!connection.baseUrl);
+    const defaultModel = getDefaultModelForConnection(connection.providerType, connection.piAuthProvider, !!connection.baseUrl);
     const providerDefaultModelIds = normalizeModelIds(defaultModels as Array<{ id: string } | string>);
 
     // Note: bedrock connections are migrated to pi + amazon-bedrock by migrateLegacyProviderTypes()
@@ -1749,7 +1798,7 @@ function migrateOpus45ToOpus46(config: StoredConfig): boolean {
 
   for (const connection of config.llmConnections) {
     // Only migrate direct Anthropic connections (not compat/third-party)
-    if (connection.providerType !== 'anthropic') continue;
+    if (!shouldUseOfficialAnthropicModels(connection)) continue;
 
     // Migrate defaultModel
     if (connection.defaultModel === OPUS_45_ID) {
@@ -1826,7 +1875,7 @@ function restoreOpus46ToAnthropicConnections(config: StoredConfig): boolean {
   let changed = false;
 
   for (const connection of config.llmConnections ?? []) {
-    if (connection.providerType !== 'anthropic') continue;
+    if (!shouldUseOfficialAnthropicModels(connection)) continue;
     if (!Array.isArray(connection.models) || connection.models.length === 0) continue;
 
     // Idempotent shape repair: normalize any bare-string 'claude-opus-4-6'
@@ -1874,7 +1923,7 @@ function migrateSonnet45ToSonnet46(config: StoredConfig): boolean {
 
   for (const connection of config.llmConnections) {
     // Only migrate direct Anthropic connections (not compat/third-party)
-    if (connection.providerType !== 'anthropic') continue;
+    if (!shouldUseOfficialAnthropicModels(connection)) continue;
 
     // Migrate defaultModel
     if (connection.defaultModel === SONNET_45_ID) {
@@ -2071,9 +2120,9 @@ function migrateModelDefaultsToConnections(config: StoredConfig): boolean {
   if (configAny.modelDefaults.anthropic) {
     const defaultSlug = config.defaultLlmConnection;
     const anthropicConn = config.llmConnections.find(c =>
-      c.slug === defaultSlug && c.providerType === 'anthropic'
+      c.slug === defaultSlug && shouldUseOfficialAnthropicModels(c)
     ) || config.llmConnections.find(c =>
-      c.providerType === 'anthropic'
+      shouldUseOfficialAnthropicModels(c)
     );
     if (anthropicConn) {
       anthropicConn.defaultModel = configAny.modelDefaults.anthropic;
@@ -2132,7 +2181,7 @@ export function migrateLegacyLlmConnectionsConfig(): void {
       if (providerStr !== 'openai_compat') {
         continue;
       }
-      const compatDefaults = getDefaultModelsForConnection(connection.providerType).map(
+      const compatDefaults = getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider, !!connection.baseUrl).map(
         m => typeof m === 'string' ? m : m.id
       );
       const normalizedModels = normalizeModelList(connection.models);
@@ -2205,6 +2254,12 @@ export function migrateLegacyLlmConnectionsConfig(): void {
       needsSave = true;
     }
 
+    // Phase 1a-ter: Repair Anthropic API key connections that were previously
+    // persisted as Pi-compatible custom endpoints.
+    if (migrateAnthropicApiCompatConnections(config)) {
+      needsSave = true;
+    }
+
     // Phase 1b: Backfill models/defaultModel on ALL connections (not just compat)
     // This ensures built-in connections (anthropic, openai) always have models populated
     if (backfillAllConnectionModels(config)) {
@@ -2234,6 +2289,9 @@ export function migrateLegacyLlmConnectionsConfig(): void {
     }
     // Phase 1j: Migrate legacy provider types (bedrock/vertex/anthropic_compat → pi/pi_compat)
     if (migrateLegacyProviderTypes(config)) {
+      needsSave = true;
+    }
+    if (migrateAnthropicApiCompatConnections(config)) {
       needsSave = true;
     }
 
@@ -2292,28 +2350,19 @@ export function migrateLegacyLlmConnectionsConfig(): void {
         createdAt: Date.now(),
       };
     } else if (legacyAuthType === 'api_key') {
-      // Anthropic API Key - check if custom endpoint (compat mode → pi_compat)
+      // Anthropic API Key. Custom Anthropic-compatible endpoints are handled by
+      // the Anthropic SDK via ANTHROPIC_BASE_URL, not by Pi-compatible routing.
       const hasCustomEndpoint = !!legacyBaseUrl;
-      if (hasCustomEndpoint) {
-        migrated = {
-          slug: 'anthropic-api',
-          name: 'Custom Anthropic-Compatible',
-          providerType: 'pi_compat',
-          authType: 'api_key_with_endpoint',
-          customEndpoint: { api: 'anthropic-messages' },
-          models: getDefaultModelsForConnection('pi_compat'),
-          createdAt: Date.now(),
-        };
-      } else {
-        migrated = {
-          slug: 'anthropic-api',
-          name: 'Anthropic (API Key)',
-          providerType: 'anthropic',
-          authType: 'api_key',
-          models: getDefaultModelsForConnection('anthropic'),
-          createdAt: Date.now(),
-        };
-      }
+      migrated = {
+        slug: 'anthropic-api',
+        name: hasCustomEndpoint ? 'Anthropic (Custom Endpoint)' : 'Anthropic (API Key)',
+        providerType: 'anthropic',
+        authType: hasCustomEndpoint ? 'api_key_with_endpoint' : 'api_key',
+        models: legacyCustomModel
+          ? [legacyCustomModel]
+          : getDefaultModelsForConnection('anthropic', undefined, hasCustomEndpoint),
+        createdAt: Date.now(),
+      };
     }
 
     if (migrated) {
@@ -2333,6 +2382,10 @@ export function migrateLegacyLlmConnectionsConfig(): void {
         // Apply legacy customModel if set
         if (legacyCustomModel) {
           migrated.defaultModel = legacyCustomModel;
+          const modelIds = (migrated.models ?? []).map(m => typeof m === 'string' ? m : m.id);
+          if (!modelIds.includes(legacyCustomModel)) {
+            migrated.models = [legacyCustomModel, ...(migrated.models ?? [])];
+          }
         }
 
         config.llmConnections.push(migrated);
@@ -2563,6 +2616,8 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
   if (index === -1) return false;
 
   const existing = connections[index]!;
+  const hasUpdate = (key: keyof Omit<LlmConnection, 'slug'>): boolean =>
+    Object.prototype.hasOwnProperty.call(updates, key);
   const toModelIds = (models?: Array<{ id: string } | string>): string[] =>
     (models ?? []).map(m => typeof m === 'string' ? m : m.id);
 
@@ -2575,16 +2630,16 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
     authType: updates.authType ?? existing.authType,
     createdAt: updates.createdAt ?? existing.createdAt,
     // Optional fields from updates or existing
-    baseUrl: updates.baseUrl !== undefined ? updates.baseUrl : existing.baseUrl,
-    models: updates.models !== undefined ? updates.models : existing.models,
-    defaultModel: updates.defaultModel !== undefined ? updates.defaultModel : existing.defaultModel,
-    modelSelectionMode: updates.modelSelectionMode !== undefined ? updates.modelSelectionMode : existing.modelSelectionMode,
+    baseUrl: hasUpdate('baseUrl') ? updates.baseUrl : existing.baseUrl,
+    models: hasUpdate('models') ? updates.models : existing.models,
+    defaultModel: hasUpdate('defaultModel') ? updates.defaultModel : existing.defaultModel,
+    modelSelectionMode: hasUpdate('modelSelectionMode') ? updates.modelSelectionMode : existing.modelSelectionMode,
     // Pi auth provider
-    piAuthProvider: updates.piAuthProvider !== undefined ? updates.piAuthProvider : existing.piAuthProvider,
+    piAuthProvider: hasUpdate('piAuthProvider') ? updates.piAuthProvider : existing.piAuthProvider,
     // Custom endpoint protocol (Anthropic/OpenAI compatible)
-    customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
+    customEndpoint: hasUpdate('customEndpoint') ? updates.customEndpoint : existing.customEndpoint,
     // Timestamps
-    lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
+    lastUsedAt: hasUpdate('lastUsedAt') ? updates.lastUsedAt : existing.lastUsedAt,
   };
 
   const updated = connections[index]!;
