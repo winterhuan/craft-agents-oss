@@ -388,11 +388,12 @@ export function resolveSetupTestConnectionHint(args: {
   baseUrl?: string;
   piAuthProvider?: string;
   customEndpoint?: CustomEndpointConfig;
-}): Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'customEndpoint'> {
+}): Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'customEndpoint'> & { authType?: LlmConnection['authType'] } {
   if (args.provider === 'pi') {
     if (args.customEndpoint && args.baseUrl?.trim()) {
       return {
         providerType: 'pi_compat',
+        authType: 'api_key_with_endpoint',
         piAuthProvider: args.customEndpoint.api === 'anthropic-messages' ? 'anthropic' : 'openai',
         customEndpoint: args.customEndpoint,
       };
@@ -405,7 +406,8 @@ export function resolveSetupTestConnectionHint(args: {
   }
 
   return {
-    providerType: args.baseUrl ? 'pi_compat' : 'anthropic',
+    providerType: 'anthropic',
+    ...(args.baseUrl?.trim() ? { authType: 'api_key_with_endpoint' as const } : {}),
   };
 }
 
@@ -676,7 +678,7 @@ export async function testBackendConnection(args: {
   hostRuntime: BackendHostRuntimeContext;
   timeoutMs?: number;
   allowEmptyApiKey?: boolean;
-  connection?: Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'customEndpoint'>;
+  connection?: Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'customEndpoint'> & { authType?: LlmConnection['authType'] };
 }): Promise<{ success: boolean; error?: string }> {
   const trimmedKey = args.apiKey.trim();
   if (!trimmedKey && !args.allowEmptyApiKey) {
@@ -693,11 +695,13 @@ export async function testBackendConnection(args: {
     const testModel = args.model;
     const providerType = args.connection?.providerType ?? getDefaultProviderType(args.provider);
     const now = Date.now();
-    const authType: LlmAuthType = (
-      providerType === 'pi_compat'
+    const hasCustomBaseUrl = !!args.baseUrl?.trim();
+    const inferredAuthType: LlmAuthType = (
+      providerType === 'pi_compat' || (providerType === 'anthropic' && hasCustomBaseUrl)
     )
       ? 'api_key_with_endpoint'
       : 'api_key';
+    const authType: LlmAuthType = args.connection?.authType ?? inferredAuthType;
 
     const syntheticConnection = {
       slug: tempSlug,

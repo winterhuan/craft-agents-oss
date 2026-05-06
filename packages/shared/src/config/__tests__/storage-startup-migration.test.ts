@@ -112,6 +112,38 @@ describe('startup migration (integration)', () => {
     expect(connection.authType).toBe('api_key')
   })
 
+  it('repairs anthropic-api compat endpoint connections to native Anthropic endpoint auth', () => {
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'anthropic-api',
+        name: 'Custom Anthropic-Compatible',
+        providerType: 'pi_compat',
+        authType: 'api_key_with_endpoint',
+        baseUrl: 'https://custom.anthropic-compatible.example',
+        piAuthProvider: 'anthropic',
+        customEndpoint: { api: 'anthropic-messages' },
+        createdAt: Date.now(),
+        models: [],
+        defaultModel: '',
+      },
+    ])
+
+    runMigration(configDir)
+
+    const connection = findConnection(configPath, 'anthropic-api')
+    const ids = modelIdsOf(connection)
+    expect(connection.providerType).toBe('anthropic')
+    expect(connection.authType).toBe('api_key_with_endpoint')
+    expect(connection.name).toBe('Anthropic (Custom Endpoint)')
+    expect(connection.baseUrl).toBe('https://custom.anthropic-compatible.example')
+    expect(connection.piAuthProvider).toBeUndefined()
+    expect(connection.customEndpoint).toBeUndefined()
+    expect(ids.length).toBeGreaterThan(0)
+    expect(connection.defaultModel).toBe(ids[0])
+  })
+
   it('preserves userDefined3Tier model subsets during startup migration', () => {
     const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
     const userDefinedModels = ['pi/claude-opus-4-6', 'pi/claude-sonnet-4-6', 'pi/claude-haiku-4-5']
@@ -407,6 +439,40 @@ describe('restoreOpus46ToAnthropicConnections (integration)', () => {
     // pi/-prefixed 4.6 is fine (existing format); the restore migration must
     // not inject a bare 'claude-opus-4-6' entry alongside it.
     expect(ids).not.toContain('claude-opus-4-6')
+  })
+
+  it('does not rewrite custom Anthropic endpoints with custom model lists during official Anthropic model migrations', () => {
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'anthropic-custom',
+        name: 'Anthropic Custom Endpoint',
+        providerType: 'anthropic',
+        authType: 'api_key_with_endpoint',
+        baseUrl: 'https://custom.anthropic-compatible.example',
+        createdAt: Date.now(),
+        models: [
+          'my-custom-claude-proxy-model',
+          'claude-opus-4-7',
+          'claude-opus-4-5-20251101',
+          'claude-sonnet-4-5-20250929',
+        ],
+        defaultModel: 'my-custom-claude-proxy-model',
+      },
+    ])
+
+    runMigration(configDir)
+
+    const connection = findConnection(configPath, 'anthropic-custom')
+    const ids = modelIdsOf(connection)
+    expect(ids).toContain('my-custom-claude-proxy-model')
+    expect(ids).toContain('claude-opus-4-7')
+    expect(ids).toContain('claude-opus-4-5-20251101')
+    expect(ids).toContain('claude-sonnet-4-5-20250929')
+    expect(ids).not.toContain('claude-opus-4-6')
+    expect(ids).not.toContain('claude-sonnet-4-6')
+    expect(connection.defaultModel).toBe('my-custom-claude-proxy-model')
   })
 
   it('leaves anthropic connections without Opus 4.7 untouched', () => {

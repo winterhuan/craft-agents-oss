@@ -96,4 +96,17 @@ describe('resolvePresetStateForBaseUrlChange', () => {
       lastNonCustomPreset: 'openrouter',
     })
   })
+
+  it('keeps Anthropic selected when typing an arbitrary Anthropic-compatible endpoint', () => {
+    expect(resolvePresetStateForBaseUrlChange({
+      matchedPreset: 'custom',
+      activePreset: 'anthropic',
+      activePresetHasEmptyUrl: false,
+      lastNonCustomPreset: 'anthropic',
+      preserveCustomAsActivePreset: true,
+    })).toEqual({
+      activePreset: 'anthropic',
+      lastNonCustomPreset: 'anthropic',
+    })
+  })
 })

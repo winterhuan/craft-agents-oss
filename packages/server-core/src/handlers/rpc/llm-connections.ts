@@ -74,12 +74,12 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       if (setup.baseUrl !== undefined) {
         updates.baseUrl = setup.baseUrl?.trim() || undefined
 
-        // Only mutate providerType for API key connections (not OAuth connections)
+        // Only mutate authType for direct Anthropic API key connections (not OAuth connections).
+        // Keep providerType as 'anthropic' — the Anthropic SDK supports custom base URLs natively.
         if (isAnthropicProvider(connection.providerType) && connection.authType !== 'oauth') {
           if (hasConfiguredBaseUrl) {
-            updates.providerType = 'pi_compat'
+            updates.providerType = 'anthropic'
             updates.authType = 'api_key_with_endpoint'
-            updates.customEndpoint = { api: 'anthropic-messages' }
           } else {
             updates.providerType = 'anthropic'
             updates.authType = 'api_key'
@@ -123,8 +123,14 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
         // providerType from createBuiltInConnection().
         updates.customEndpoint = undefined
         if (connection.providerType === 'pi_compat' && connection.authType !== 'oauth' && !isNewConnection) {
-          updates.providerType = 'pi'
-          updates.authType = 'api_key'
+          // Determine whether to downgrade to 'pi' or 'anthropic' based on the slug prefix.
+          // Connections originally created from the anthropic-api slug should revert to anthropic.
+          const isAnthropicSlug = connection.slug.startsWith('anthropic-api')
+          updates.providerType = isAnthropicSlug ? 'anthropic' : 'pi'
+          updates.authType = isAnthropicSlug && hasConfiguredBaseUrl ? 'api_key_with_endpoint' : 'api_key'
+          if (isAnthropicSlug) {
+            updates.piAuthProvider = undefined
+          }
         }
       }
 

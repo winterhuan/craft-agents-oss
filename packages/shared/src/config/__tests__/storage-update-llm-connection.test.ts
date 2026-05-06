@@ -42,10 +42,14 @@ function setup(llmConnections: any[]) {
 
   function runUpdate(slug: string, updates: Record<string, unknown>): boolean {
     const updatesJson = JSON.stringify(updates)
+    return runUpdateExpression(slug, updatesJson)
+  }
+
+  function runUpdateExpression(slug: string, updatesExpression: string): boolean {
     const run = Bun.spawnSync([
       process.execPath,
       '--eval',
-      `import { updateLlmConnection } from '${STORAGE_MODULE_PATH}'; const ok = updateLlmConnection(${JSON.stringify(slug)}, ${updatesJson}); process.exit(ok ? 0 : 1);`,
+      `import { updateLlmConnection } from '${STORAGE_MODULE_PATH}'; const ok = updateLlmConnection(${JSON.stringify(slug)}, ${updatesExpression}); process.exit(ok ? 0 : 1);`,
     ], {
       env: { ...process.env, CRAFT_CONFIG_DIR: configDir },
       stdout: 'pipe',
@@ -62,7 +66,7 @@ function setup(llmConnections: any[]) {
     return config.llmConnections.find((c: any) => c.slug === slug)
   }
 
-  return { configDir, configPath, runUpdate, readConnection }
+  return { configDir, configPath, runUpdate, runUpdateExpression, readConnection }
 }
 
 function makeConnection(overrides: Record<string, unknown> = {}) {
@@ -113,5 +117,23 @@ describe('updateLlmConnection – customEndpoint', () => {
 
     const conn = readConnection('custom-compat')
     expect(conn.customEndpoint).toEqual({ api: 'anthropic-messages' })
+  })
+
+  it('clears customEndpoint and piAuthProvider when explicitly unset', () => {
+    const { runUpdateExpression, readConnection } = setup([
+      makeConnection({ customEndpoint: { api: 'anthropic-messages' } }),
+    ])
+
+    const ok = runUpdateExpression(
+      'custom-compat',
+      "{ providerType: 'anthropic', authType: 'api_key_with_endpoint', customEndpoint: undefined, piAuthProvider: undefined }",
+    )
+    expect(ok).toBe(true)
+
+    const conn = readConnection('custom-compat')
+    expect(conn.providerType).toBe('anthropic')
+    expect(conn.authType).toBe('api_key_with_endpoint')
+    expect(conn.customEndpoint).toBeUndefined()
+    expect(conn.piAuthProvider).toBeUndefined()
   })
 })
